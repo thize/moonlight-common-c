@@ -111,6 +111,7 @@ static uint64_t intervalStartTimeMs;
 static int lastIntervalLossPercentage;
 static int lastConnectionStatusUpdate;
 static uint32_t currentEnetSequenceNumber;
+static uint32_t currentMicSequenceNumber;
 static uint64_t firstFrameTimeMs;
 
 static LINKED_BLOCKING_QUEUE invalidReferenceFrameTuples;
@@ -142,6 +143,12 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_CLIPBOARD 13
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 14
 #define IDX_DS_ADAPTIVE_TRIGGERS 15
+#define IDX_MIC_DATA 16
+
+// Largest Opus payload that LiSendMicrophoneData() will accept. The encrypted control
+// message is assembled in a 256 byte stack buffer in sendMessageEnet(), so this leaves
+// plenty of room for the packet header and our sequence number.
+#define MIC_DATA_PAYLOAD_MAX_SIZE 200
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -163,6 +170,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -181,6 +189,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -199,6 +208,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -217,6 +227,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set Clipboard (unused)
     -1,     // File transfer nonce request (unused)
     -1,     // Set Adaptive Triggers (unused)
+    -1,     // Microphone data (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -235,6 +246,7 @@ static const short packetTypesGen7Enc[] = {
     0x3001, // Set Clipboard (Apollo protocol extension)
     0x3002, // File transfer nonce request (Apollo protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
+    0x3003, // Microphone data (Apollo protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -372,6 +384,7 @@ int initializeControlStream(void) {
     lastConnectionStatusUpdate = CONN_STATUS_OKAY;
     firstFrameTimeMs = 0;
     currentEnetSequenceNumber = 0;
+    currentMicSequenceNumber = 0;
     usePeriodicPing = APP_VERSION_AT_LEAST(7, 1, 415);
     encryptionCtx = PltCreateCryptoContext();
     decryptionCtx = PltCreateCryptoContext();
@@ -2074,4 +2087,41 @@ int LiSendEmptyPayload() {
         ENET_PACKET_FLAG_RELIABLE,
         false
     );
+}
+
+// Send an Opus-encoded microphone frame to the streaming machine
+int LiSendMicrophoneData(const void* opusData, int length) {
+    uint8_t payload[sizeof(uint32_t) + MIC_DATA_PAYLOAD_MAX_SIZE];
+    uint32_t sequenceNumber;
+
+    // This is a protocol extension only supported by Apollo hosts with microphone support
+    if (!(SunshineFeatureFlags & LI_FF_MICROPHONE)) {
+        return LI_ERR_UNSUPPORTED;
+    }
+
+    // The frame has to fit in the buffer that sendMessageEnet() encrypts from
+    LC_ASSERT(length > 0 && length <= MIC_DATA_PAYLOAD_MAX_SIZE);
+    if (length <= 0 || length > MIC_DATA_PAYLOAD_MAX_SIZE) {
+        return -1;
+    }
+
+    // The host uses the sequence number to detect lost frames and conceal them
+    sequenceNumber = BE32(currentMicSequenceNumber);
+    currentMicSequenceNumber++;
+
+    memcpy(payload, &sequenceNumber, sizeof(sequenceNumber));
+    memcpy(payload + sizeof(sequenceNumber), opusData, length);
+
+    // Microphone data is useless if it arrives late or out of order, so send it
+    // unsequenced and let the host's concealment deal with whatever is dropped.
+    if (!sendMessageEnet(packetTypes[IDX_MIC_DATA],
+                         (short)(sizeof(sequenceNumber) + length),
+                         payload,
+                         CTRL_CHANNEL_MICROPHONE,
+                         ENET_PACKET_FLAG_UNSEQUENCED,
+                         false)) {
+        return -1;
+    }
+
+    return 0;
 }

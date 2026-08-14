@@ -1132,6 +1132,13 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             SunshineFeatureFlags = 0;
         }
 
+        // Microphone support is advertised separately by Apollo hosts, but we expose it
+        // to clients as just another host feature flag.
+        unsigned int micSupport;
+        if (parseSdpAttributeToUInt(response.payload, "x-ss-general.micSupport", &micSupport) && micSupport != 0) {
+            SunshineFeatureFlags |= LI_FF_MICROPHONE;
+        }
+
         // Look for the Sunshine encryption flags in the SDP attributes
         if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.encryptionSupported", &EncryptionFeaturesSupported)) {
             EncryptionFeaturesSupported = 0;

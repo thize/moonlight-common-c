@@ -100,6 +100,11 @@ typedef struct _STREAM_CONFIGURATION {
     // in /launch and /resume requests.
     char remoteInputAesKey[16];
     char remoteInputAesIv[16];
+
+    // If set, the client will offer microphone passthrough to the host PC.
+    // The host must also support it for LiSendMicrophoneData() to work.
+    // See LI_FF_MICROPHONE and LiGetHostFeatureFlags() below.
+    int enableMicrophone;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap
@@ -572,6 +577,21 @@ int LiSendExecServerCmd(uint8_t cmdId);
 // This method exists here for workaround client side wifi sleeps.
 int LiSendEmptyPayload();
 
+// This function sends a single Opus-encoded microphone frame to the host PC, where it is
+// played back on a virtual microphone device. The audio must be mono 48 KHz and each frame
+// must encode 10 ms of audio (480 samples), which keeps the encoded frame well under the
+// 200 byte limit at the bitrates suitable for voice.
+//
+// This is an Apollo protocol extension. It requires StreamConfig.enableMicrophone to have
+// been set prior to LiStartConnection() and the host to have accepted the offer. If the host
+// doesn't support microphone passthrough, this will return LI_ERR_UNSUPPORTED and the caller
+// should stop capturing. To determine if LiSendMicrophoneData() is supported without calling
+// it, call LiGetHostFeatureFlags() and check for the LI_FF_MICROPHONE flag.
+//
+// Microphone frames are sent unreliably, so callers must not rely on them all arriving.
+// This function must not be called concurrently from multiple threads.
+int LiSendMicrophoneData(const void* opusData, int length);
+
 // This function queues a relative mouse move event to be sent to the remote server.
 int LiSendMouseMoveEvent(short deltaX, short deltaY);
 
@@ -970,6 +990,7 @@ void LiRequestIdrFrame(void);
 // This function returns any extended feature flags supported by the host.
 #define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
+#define LI_FF_MICROPHONE              0x04 // LiSendMicrophoneData() supported
 uint32_t LiGetHostFeatureFlags(void);
 
 #ifdef __cplusplus
